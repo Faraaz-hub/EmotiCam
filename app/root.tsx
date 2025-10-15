@@ -6,6 +6,7 @@ import {
   ScrollRestoration,
 } from "@remix-run/react";
 import type { LinksFunction } from "@remix-run/node";
+import { DataProvider } from "./DataContext";
 
 import "./tailwind.css";
 

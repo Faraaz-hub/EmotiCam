@@ -1,138 +1,1059 @@
-import type { MetaFunction } from "@remix-run/node";
+import { useRef, useState } from "react";
+import type { MetaFunction, LoaderFunctionArgs } from "@remix-run/node";
+import { json } from "@remix-run/node";
+import { useLoaderData, Link } from "@remix-run/react";
+import { getUserFromRequest } from "~/lib/auth.server";
+import { log } from "node:console";
 
 export const meta: MetaFunction = () => {
   return [
-    { title: "New Remix App" },
-    { name: "description", content: "Welcome to Remix!" },
+    { title: "KidsEmotion - Child-Safe Content Recommendations" },
+    { name: "description", content: "Child-focused facial expression analysis and safe content recommendations" },
   ];
 };
 
+export async function loader({ request }: LoaderFunctionArgs) {
+  const user = await getUserFromRequest(request);
+  return json({ user });
+}
+
+interface ChildAnalysis {
+  ageEstimate: string;
+  primaryEmotion: string;
+  energyLevel: string;
+  developmentalStage: string;
+  moodIndicators: string;
+}
+
+interface ContentStrategy {
+  emotionalNeed: string;
+  learningOpportunity: string;
+  energyMatch: string;
+  attentionSpan: string;
+}
+
+interface ParentalGuidance {
+  suggestedDuration: string;
+  supervisionLevel: string;
+  coViewingOpportunities: string;
+  discussionPoints: string;
+  followUpActivities: string;
+}
+
+interface DevelopmentalBenefits {
+  emotionalDevelopment: string;
+  cognitiveSkills: string;
+  socialSkills: string;
+  creativeExpression: string;
+}
+
+interface AnalysisResult {
+  childAnalysis: ChildAnalysis;
+  contentStrategy: ContentStrategy;
+  youtubeKidsQueries: string[];
+  googleSafeQueries: string[];
+  parentalGuidance: ParentalGuidance;
+  developmentalBenefits: DevelopmentalBenefits;
+  safetyAssurance: string[];
+}
+
+interface YouTubeVideo {
+  title: string;
+  channel: string;
+  description: string;
+  duration: string;
+  url: string;
+  thumbnail: string;
+  ageAppropriate: boolean;
+  educational: boolean;
+  safetyRating: string;
+  category: string;
+  searchQuery: string;
+}
+
+interface VideoSearchResult {
+  success: boolean;
+  videos: YouTubeVideo[];
+  totalFound: number;
+  searchQueries: string[];
+  note?: string;
+  selectedQuery?: string;
+  queryRanking?: {
+    bestMatch: string;
+    reason: string;
+    rankedQueries: Array<{
+      query: string;
+      score: number;
+      reasoning: string;
+    }>;
+  };
+}
+
 export default function Index() {
+  const { user } = useLoaderData<typeof loader>();
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [videoResults, setVideoResults] = useState<VideoSearchResult | null>(null);
+  const [isDetecting, setIsDetecting] = useState(false);
+  const [isSearchingVideos, setIsSearchingVideos] = useState(false);
+  const [error, setError] = useState<string>("");
+  const [isWebcamActive, setIsWebcamActive] = useState(false);
+  const [capturedPhoto, setCapturedPhoto] = useState<string>("");
+  const [detectionStep, setDetectionStep] = useState<string>("");
+
+  // Start webcam
+  const startWebcam = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480 },
+        audio: false,
+      });
+      
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        setIsWebcamActive(true);
+        setError("");
+      }
+    } catch (err) {
+      setError("Error accessing webcam. Please ensure you have granted camera permissions.");
+      console.error("Error accessing webcam:", err);
+    }
+  };
+
+  // Stop webcam
+  const stopWebcam = () => {
+    if (videoRef.current && videoRef.current.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      stream.getTracks().forEach(track => track.stop());
+      videoRef.current.srcObject = null;
+      setIsWebcamActive(false);
+      setCapturedPhoto("");
+      setDetectionStep("");
+      setAnalysis(null);
+      setVideoResults(null);
+    }
+  };
+
+  // Analyze child's expression
+  const analyzeExpression = async () => {
+    if (!videoRef.current || !canvasRef.current || isDetecting) return;
+
+    setIsDetecting(true);
+    setError("");
+    
+    try {
+      // Step 1: Take photo
+      setDetectionStep("📸 Taking photo...");
+      const canvas = canvasRef.current;
+      const video = videoRef.current;
+      const ctx = canvas.getContext("2d");
+      
+      if (!ctx) return;
+
+      // Set canvas size to match video
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      
+      // Draw video frame to canvas
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      
+      // Convert canvas to base64 and display the captured phot = canvas.toDataURL("image/jpeg", 0.8);
+      const imageData = canvas.toDataURL("image/jpeg", 0.8);
+      setCapturedPhoto(imageData);
+      
+      // Add a brief delay to show the photo was captured
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Step 2: Send to AI for analysis
+      setDetectionStep("🤖 Analyzing child's expression...");
+      
+      const response = await fetch("http://127.0.0.1:8000/api/emotion", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ imageData }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const result = await response.json();
+      console.log("result : " + result);
+      
+      
+      if (result.error) {
+        throw new Error(result.error);
+      }
+
+      // Step 3: Show results
+      setDetectionStep("✅ Analysis complete!");
+      setAnalysis(result.analysis);
+      
+      // Step 4: Automatically search for YouTube videos
+      setTimeout(async () => {
+        setDetectionStep("🎥 Finding YouTube videos...");
+        await searchYouTubeVideosForAnalysis(result.analysis);
+        setDetectionStep("");
+      }, 1000);
+      
+    } catch (err) {
+      setError("Error analyzing expression. Please check your OpenAI API key.");
+      setDetectionStep("");
+      console.error("Error analyzing expression:", err);
+    } finally {
+      setIsDetecting(false);
+    }
+  };
+
+  // Search for YouTube videos based on analysis (direct call with analysis parameter)
+  const searchYouTubeVideosForAnalysis = async (analysisData: AnalysisResult) => {
+    if (!analysisData || isSearchingVideos) return;
+    console.log("Search Youtube Vedios For Analysis is Called");
+    
+
+    // console.log("analysis data :  " + analysisData);
+    
+
+    setIsSearchingVideos(true);
+    setError("");
+
+    try {
+      const searchQueries = [...analysisData.youtubeKidsQueries, ...analysisData.googleSafeQueries];
+      // console.log("searchQueries : " + searchQueries);
+      
+      
+      const response = await fetch("/api/search", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ 
+          searchQueries,
+          childAnalysis: analysisData ,
+          ImageData : capturedPhoto
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const result = await response.json();
+      
+      if (result.error) {
+        throw new Error(result.error);
+      }
+
+      setVideoResults(result);
+
+      
+      
+      
+    } catch (err) {
+      setError("Error searching for videos. Please try again.");
+      console.error("Error searching videos:", err);
+    } finally {
+      setIsSearchingVideos(false);
+    }
+  };
+
+  const groupVideosByCategory = (videos: YouTubeVideo[]) => {
+    const grouped: Record<string, YouTubeVideo[]> = {};
+    videos.forEach(video => {
+      const category = video.category || 'General Learning';
+      if (!grouped[category]) {
+        grouped[category] = [];
+      }
+      grouped[category].push(video);
+    });
+    return grouped;
+  };
+
   return (
-    <div className="flex h-screen items-center justify-center">
-      <div className="flex flex-col items-center gap-16">
-        <header className="flex flex-col items-center gap-9">
-          <h1 className="leading text-2xl font-bold text-gray-800 dark:text-gray-100">
-            Welcome to <span className="sr-only">Remix</span>
-          </h1>
-          <div className="h-[144px] w-[434px]">
-            <img
-              src="/logo-light.png"
-              alt="Remix"
-              className="block w-full dark:hidden"
-            />
-            <img
-              src="/logo-dark.png"
-              alt="Remix"
-              className="hidden w-full dark:block"
-            />
-          </div>
-        </header>
-        <nav className="flex flex-col items-center justify-center gap-4 rounded-3xl border border-gray-200 p-6 dark:border-gray-700">
-          <p className="leading-6 text-gray-700 dark:text-gray-200">
-            What&apos;s next?
-          </p>
-          <ul>
-            {resources.map(({ href, text, icon }) => (
-              <li key={href}>
-                <a
-                  className="group flex items-center gap-3 self-stretch p-3 leading-normal text-blue-700 hover:underline dark:text-blue-500"
-                  href={href}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {icon}
-                  {text}
-                </a>
-              </li>
-            ))}
-          </ul>
-        </nav>
+    <div className="min-h-screen bg-gradient-to-br from-pink-300 via-purple-300 to-indigo-400 relative overflow-hidden">
+      {/* Floating Background Elements */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-10 left-10 w-20 h-20 bg-yellow-300 rounded-full animate-float opacity-60"></div>
+        <div className="absolute top-32 right-20 w-16 h-16 bg-pink-300 rounded-full animate-bounce-fun opacity-60"></div>
+        <div className="absolute bottom-20 left-1/4 w-24 h-24 bg-green-300 rounded-full animate-bubble opacity-60"></div>
+        <div className="absolute top-1/2 right-10 w-12 h-12 bg-blue-300 rounded-full animate-jiggle opacity-60"></div>
+        <div className="absolute bottom-32 right-1/3 w-18 h-18 bg-purple-300 rounded-full animate-heart-beat opacity-60"></div>
+        
+        {/* Animated Stars */}
+        <div className="absolute top-20 left-1/3 text-yellow-400 text-2xl animate-spin-slow">⭐</div>
+        <div className="absolute bottom-40 left-20 text-pink-400 text-xl animate-wiggle">🌟</div>
+        <div className="absolute top-40 right-1/4 text-blue-400 text-3xl animate-pulse">✨</div>
       </div>
+
+      <div className="container mx-auto px-4 py-8 relative z-10">
+        {/* Authentication Navigation */}
+        <div className="flex justify-end mb-4 animate-slide-down">
+          {user ? (
+            <div className="flex items-center gap-4">
+              <Link
+                to="/dashboard"
+                className="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 rounded-2xl font-fun font-bold text-white transition-all duration-300 transform hover:scale-105 shadow-lg border-2 border-white/50 flex items-center gap-2"
+              >
+                <span className="text-xl animate-pulse">🏠</span>
+                Dashboard
+              </Link>
+              <div className="text-white font-fun font-bold bg-white/20 px-4 py-2 rounded-2xl backdrop-blur-sm border-2 border-white/30 flex items-center gap-2">
+                <span className="text-xl animate-heart-beat">👋</span>
+                Hi {user.name}!
+              </div>
+            </div>
+          ) : (
+            <div className="flex gap-3">
+              <Link
+                to="/login"
+                className="px-4 py-2 bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 rounded-2xl font-fun font-bold text-white transition-all duration-300 transform hover:scale-105 shadow-lg border-2 border-white/50 flex items-center gap-2"
+              >
+                <span className="text-xl animate-jiggle">🔑</span>
+                Login
+              </Link>
+              <Link
+                to="/signup"
+                className="px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 rounded-2xl font-fun font-bold text-white transition-all duration-300 transform hover:scale-105 shadow-lg border-2 border-white/50 flex items-center gap-2"
+              >
+                <span className="text-xl animate-bounce-fun">🚀</span>
+                Sign Up
+              </Link>
+            </div>
+          )}
+        </div>
+
+        {/* Header with enhanced child-friendly design */}
+        <div className="text-center mb-8 animate-slide-down">
+          <div className="bg-white/20 backdrop-blur-md rounded-3xl p-8 border-4 border-white/30 shadow-2xl mx-auto max-w-4xl">
+            <h1 className="text-5xl font-fun font-bold mb-4 animate-float">
+              <span className="inline-block hover:animate-jiggle transition-all duration-300 hover:scale-110 text-transparent bg-clip-text bg-gradient-to-r from-pink-500 via-purple-500 to-blue-500 animate-rainbow">
+                KidsEmotion
+              </span>{" "}
+              <span className="inline-block animate-bounce-fun text-6xl">👶</span>
+              <span className="inline-block animate-heart-beat text-6xl">📱</span>
+            </h1>
+            <div className="flex justify-center items-center gap-4 mb-4">
+              <span className="text-4xl animate-wiggle">🌈</span>
+              <p className="text-2xl text-white font-semibold animate-fade-in bg-gradient-to-r from-purple-600 to-pink-600 px-6 py-2 rounded-full shadow-lg">
+                Fun & Safe Content for Kids!
+              </p>
+              <span className="text-4xl animate-spin-slow">🎨</span>
+            </div>
+            <div className="flex justify-center gap-2">
+              <span className="text-2xl animate-bounce-fun">🎭</span>
+              <span className="text-2xl animate-float">🎪</span>
+              <span className="text-2xl animate-wiggle">🎨</span>
+              <span className="text-2xl animate-pulse">🌟</span>
+              <span className="text-2xl animate-jiggle">🎵</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-col items-center gap-8">
+          {/* Webcam Controls with rainbow styling */}
+          <div className="flex gap-6 animate-slide-up">
+            <button
+              onClick={startWebcam}
+              disabled={isWebcamActive}
+              className="group px-8 py-4 bg-gradient-to-r from-green-400 to-blue-500 hover:from-green-500 hover:to-blue-600 disabled:from-gray-400 disabled:to-gray-500 disabled:cursor-not-allowed rounded-2xl font-fun font-bold text-xl transition-all duration-300 transform hover:scale-110 hover:shadow-2xl active:scale-95 shadow-lg border-4 border-white/50"
+            >
+              <span className="flex items-center gap-3 text-white">
+                {isWebcamActive ? (
+                  <>
+                    <span className="w-3 h-3 bg-green-300 rounded-full animate-pulse shadow-lg"></span>
+                    <span className="text-2xl animate-wiggle">📹</span>
+                    Camera is ON!
+                    <span className="text-2xl animate-heart-beat">💚</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-3xl group-hover:animate-jiggle">📹</span>
+                    Start Camera Fun!
+                    <span className="text-3xl group-hover:animate-bounce-fun">🎬</span>
+                  </>
+                )}
+              </span>
+            </button>
+            <button
+              onClick={stopWebcam}
+              disabled={!isWebcamActive}
+              className="group px-8 py-4 bg-gradient-to-r from-red-400 to-pink-500 hover:from-red-500 hover:to-pink-600 disabled:from-gray-400 disabled:to-gray-500 disabled:cursor-not-allowed rounded-2xl font-fun font-bold text-xl transition-all duration-300 transform hover:scale-110 hover:shadow-2xl active:scale-95 shadow-lg border-4 border-white/50"
+            >
+              <span className="flex items-center gap-3 text-white">
+                <span className="text-3xl group-hover:animate-wiggle">⏹️</span>
+                Stop Camera
+                <span className="text-3xl group-hover:animate-jiggle">🛑</span>
+              </span>
+            </button>
+          </div>
+
+          {/* Video and Photo Display with playful design */}
+          <div className="flex flex-col lg:flex-row gap-8 items-center animate-scale-in">
+            {/* Live Video Container */}
+            <div className="text-center group">
+              <div className="bg-white/20 backdrop-blur-md rounded-3xl p-6 border-4 border-rainbow-blue/50 shadow-2xl">
+                <h3 className="text-2xl font-fun font-bold mb-4 group-hover:text-blue-300 transition-colors duration-300 flex items-center justify-center gap-2">
+                  <span className="text-3xl animate-wiggle">📹</span>
+                  <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-500 to-purple-500">Live Camera</span>
+                  <span className="text-3xl animate-pulse">✨</span>
+                </h3>
+                <div className="relative transform transition-all duration-500 hover:scale-105">
+                  <video
+                    ref={videoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="w-80 h-60 bg-gradient-to-br from-blue-200 to-purple-200 rounded-2xl shadow-2xl border-8 border-white/50 transition-all duration-300 hover:border-rainbow-blue/70 hover:shadow-blue-500/30 hover:shadow-2xl"
+                  />
+                  {!isWebcamActive && (
+                    <div className="absolute inset-0 bg-gradient-to-br from-blue-300/80 to-purple-300/80 flex items-center justify-center rounded-2xl backdrop-blur-sm transition-all duration-300">
+                      <div className="text-white text-center animate-pulse">
+                        <div className="text-6xl animate-bounce-fun mb-4">📹</div>
+                        <div className="text-xl font-fun font-bold bg-blue-500/80 px-4 py-2 rounded-full">
+                          Click "Start Camera" to begin the fun!
+                        </div>
+                        <div className="flex justify-center gap-2 mt-4">
+                          <span className="text-2xl animate-wiggle">🎬</span>
+                          <span className="text-2xl animate-float">🌟</span>
+                          <span className="text-2xl animate-jiggle">🎪</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {isWebcamActive && (
+                    <div className="absolute top-4 right-4 flex items-center gap-2">
+                      <div className="w-4 h-4 bg-red-400 rounded-full animate-pulse shadow-lg border-2 border-white"></div>
+                      <span className="text-white font-fun font-bold bg-red-500/80 px-2 py-1 rounded-full text-sm">LIVE</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Captured Photo Container */}
+            <div className="text-center group">
+              <div className="bg-white/20 backdrop-blur-md rounded-3xl p-6 border-4 border-rainbow-pink/50 shadow-2xl">
+                <h3 className="text-2xl font-fun font-bold mb-4 group-hover:text-pink-300 transition-colors duration-300 flex items-center justify-center gap-2">
+                  <span className="text-3xl animate-heart-beat">📸</span>
+                  <span className="text-transparent bg-clip-text bg-gradient-to-r from-pink-500 to-purple-500">Photo Magic</span>
+                  <span className="text-3xl animate-spin-slow">🎨</span>
+                </h3>
+                <div className="relative w-80 h-60 bg-gradient-to-br from-pink-200 to-purple-200 rounded-2xl shadow-2xl border-8 border-white/50 transform transition-all duration-500 hover:scale-105 hover:border-rainbow-pink/70 hover:shadow-pink-500/30 hover:shadow-2xl">
+                  {capturedPhoto ? (
+                    <img
+                      src={capturedPhoto}
+                      alt="Captured moment"
+                      className="w-full h-full object-cover rounded-xl animate-fade-in"
+                    />
+                  ) : (
+                    <div className="absolute inset-0 bg-gradient-to-br from-pink-300/80 to-purple-300/80 flex items-center justify-center rounded-xl backdrop-blur-sm">
+                      <div className="text-white text-center animate-pulse">
+                        <div className="text-6xl animate-float mb-4">📸</div>
+                        <div className="text-lg font-fun font-bold bg-pink-500/80 px-4 py-2 rounded-full">
+                          Your photo will appear here!
+                        </div>
+                        <div className="flex justify-center gap-2 mt-4">
+                          <span className="text-2xl animate-jiggle">✨</span>
+                          <span className="text-2xl animate-wiggle">🌈</span>
+                          <span className="text-2xl animate-bounce-fun">📷</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {isDetecting && (
+                    <div className="absolute inset-0 bg-gradient-to-br from-yellow-300/90 to-orange-300/90 flex items-center justify-center rounded-xl backdrop-blur-sm animate-fade-in">
+                      <div className="text-white text-center">
+                        <div className="relative mb-4">
+                          <div className="absolute inset-0 bg-gradient-to-r from-rainbow-red via-rainbow-yellow to-rainbow-green rounded-2xl opacity-75 animate-shimmer"></div>
+                          <div className="relative bg-black/50 px-6 py-4 rounded-2xl border-4 border-white/50">
+                            <div className="text-2xl font-fun font-bold flex items-center gap-3">
+                              <span className="text-3xl animate-spin-slow">🔄</span>
+                              {detectionStep}
+                              <span className="text-3xl animate-heart-beat">💖</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Analysis Button with rainbow styling */}
+          {isWebcamActive && (
+            <div className="animate-slide-up">
+              <button
+                onClick={analyzeExpression}
+                disabled={isDetecting}
+                className="group px-12 py-6 bg-gradient-to-r from-rainbow-red via-rainbow-yellow to-rainbow-green hover:from-rainbow-orange hover:via-rainbow-pink hover:to-rainbow-purple disabled:from-gray-400 disabled:to-gray-500 disabled:cursor-not-allowed rounded-3xl font-fun font-bold text-2xl transition-all duration-300 shadow-2xl hover:shadow-3xl transform hover:scale-110 active:scale-95 border-4 border-white/50 text-white"
+              >
+                <span className="flex items-center gap-4">
+                  {isDetecting ? (
+                    <>
+                      <div className="w-8 h-8 border-4 border-white border-t-transparent rounded-full animate-spin"></div>
+                      <span className="animate-pulse">{detectionStep}</span>
+                      <span className="text-4xl animate-jiggle">✨</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-4xl group-hover:animate-jiggle">📸</span>
+                      <span className="animate-bounce-fun">Let's Analyze Your Expression!</span>
+                      <span className="text-4xl group-hover:animate-heart-beat">🎭</span>
+                      <span className="text-4xl group-hover:animate-wiggle">✨</span>
+                    </>
+                  )}
+                </span>
+              </button>
+            </div>
+          )}
+
+
+
+          {/* Error Display with playful styling */}
+          {error && (
+            <div className="bg-gradient-to-r from-red-400/30 to-pink-400/30 border-4 border-red-300 rounded-3xl p-6 max-w-md text-center animate-slide-down backdrop-blur-md shadow-2xl">
+              <div className="flex items-center justify-center gap-3 animate-fade-in">
+                <span className="text-4xl animate-jiggle">⚠️</span>
+                <div className="text-center">
+                  <div className="font-fun font-bold text-xl text-red-100 mb-2">Oops! Something went wrong!</div>
+                  <p className="text-red-200 font-semibold">{error}</p>
+                </div>
+                <span className="text-4xl animate-wiggle">😅</span>
+              </div>
+            </div>
+          )}
+
+          {/* YouTube Video Results with colorful design */}
+          {videoResults && (
+            <div className="w-full max-w-6xl animate-scale-in">
+              <div className="bg-gradient-to-br from-white/20 to-purple/20 backdrop-blur-md rounded-3xl p-8 mb-6 border-4 border-white/30 shadow-2xl">
+                <h2 className="text-4xl font-fun font-bold mb-6 text-center animate-slide-down">
+                  <span className="inline-block animate-jiggle text-5xl">🎥</span>
+                  <span className="mx-4 text-transparent bg-clip-text bg-gradient-to-r from-rainbow-red via-rainbow-yellow to-rainbow-blue">
+                    Fun Videos for You!
+                  </span>
+                  <span className="inline-block animate-heart-beat text-5xl">🌟</span>
+                </h2>
+                
+                <div className="text-center mb-6 animate-fade-in">
+                  <div className="bg-gradient-to-r from-green-400/30 to-blue-400/30 rounded-2xl p-4 border-4 border-white/30">
+                    <p className="text-2xl font-fun font-bold text-white flex items-center justify-center gap-3">
+                      <span className="animate-bounce-fun">🎊</span>
+                      Found <span className="text-rainbow-yellow font-black text-3xl animate-pulse bg-green-500/50 px-3 py-1 rounded-full">{videoResults.totalFound}</span> awesome videos!
+                      <span className="animate-spin-slow">🎪</span>
+                    </p>
+                  </div>
+                  
+                  {/* AI Query Selection Info with rainbow styling */}
+                  {videoResults.queryRanking && (
+                    <div className="mt-6 p-6 bg-gradient-to-r from-purple-400/30 to-blue-400/30 rounded-2xl border-4 border-purple-300/50 animate-slide-up backdrop-blur-sm shadow-xl">
+                      <h3 className="text-2xl font-fun font-bold text-purple-100 mb-4 flex items-center justify-center gap-3">
+                        <span className="animate-float text-3xl">🤖</span>
+                        Smart Video Search!
+                        <span className="animate-jiggle text-3xl">✨</span>
+                      </h3>
+                      <div className="text-left space-y-4">
+                        <div className="flex items-center gap-3 animate-fade-in bg-white/20 rounded-2xl p-4 border-2 border-white/30">
+                          <span className="text-purple-200 font-fun font-bold text-lg">🎯 Best Match:</span>
+                          <span className="text-white font-mono text-lg bg-black/40 px-3 py-2 rounded-xl border-2 border-white/30">
+                            "{videoResults.queryRanking.bestMatch}"
+                          </span>
+                          <span className="text-rainbow-green font-black text-xl bg-green-400/50 px-3 py-2 rounded-full animate-pulse border-2 border-green-300">
+                            {videoResults.queryRanking.rankedQueries?.[0]?.score || 'N/A'}% Perfect!
+                          </span>
+                        </div>
+                        <div className="text-purple-100 text-lg animate-fade-in bg-white/10 rounded-xl p-3 border-2 border-white/20">
+                          <span className="font-fun font-bold">🧠 Why this is perfect:</span> {videoResults.queryRanking.reason}
+                        </div>
+                        
+                        {/* Top 3 Ranked Queries with playful animations */}
+                        {videoResults.queryRanking.rankedQueries && (
+                          <div className="mt-4 animate-slide-up">
+                            <p className="text-purple-200 font-fun font-bold text-lg mb-3 flex items-center gap-2">
+                              <span className="animate-spin-slow">🏆</span>
+                              Top Video Searches:
+                            </p>
+                            <div className="space-y-3">
+                              {videoResults.queryRanking.rankedQueries.slice(0, 3).map((rankedQuery, index) => (
+                                <div key={index} className="flex items-center gap-3 text-lg animate-fade-in transition-all duration-300 hover:bg-white/20 p-3 rounded-xl border-2 border-white/20 hover:border-white/40" style={{animationDelay: `${index * 150}ms`}}>
+                                  <span className="text-rainbow-yellow font-black text-xl">#{index + 1}</span>
+                                  <span className="text-white font-mono bg-black/40 px-2 py-1 rounded-lg border border-white/30">
+                                    "{rankedQuery.query}"
+                                  </span>
+                                  <span className="text-rainbow-green font-bold bg-green-400/50 px-2 py-1 rounded-full border border-green-300">
+                                    {rankedQuery.score}%
+                                  </span>
+                                  <span className="text-gray-200 flex-1 font-semibold">- {rankedQuery.reasoning}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Fallback for non-AI selection */}
+                  {videoResults.selectedQuery && !videoResults.queryRanking && (
+                    <div className="mt-4 p-4 bg-gradient-to-r from-blue-400/30 to-cyan-400/30 rounded-2xl animate-slide-up backdrop-blur-sm border-4 border-blue-300/50">
+                      <p className="text-blue-100 text-lg flex items-center justify-center gap-3 font-fun font-bold">
+                        <span className="animate-bounce-fun text-2xl">🎯</span>
+                        <strong>Selected Search:</strong> 
+                        <span className="font-mono bg-black/40 px-3 py-2 rounded-xl border-2 border-white/30">
+                          "{videoResults.selectedQuery}"
+                        </span>
+                      </p>
+                    </div>
+                  )}
+                  
+                  {videoResults.note && (
+                    <div className="mt-4 p-4 bg-gradient-to-r from-yellow-400/30 to-orange-400/30 rounded-2xl animate-fade-in border-4 border-yellow-300/50">
+                      <p className="text-yellow-100 text-lg flex items-center justify-center gap-3 font-fun font-bold">
+                        <span className="animate-wiggle text-2xl">⚠️</span> 
+                        {videoResults.note}
+                        <span className="animate-pulse text-2xl">💡</span>
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {videoResults.videos.length > 0 ? (
+                  <div className="space-y-8 animate-fade-in">
+                    {Object.entries(groupVideosByCategory(videoResults.videos)).map(([category, videos], categoryIndex) => (
+                      <div key={category} className="bg-gradient-to-br from-white/20 to-purple/10 rounded-3xl p-6 animate-slide-up backdrop-blur-md border-4 border-white/20 shadow-2xl" style={{animationDelay: `${categoryIndex * 200}ms`}}>
+                        <h3 className="text-3xl font-fun font-bold mb-6 text-white flex items-center justify-center gap-4">
+                          <span className="animate-bounce-fun text-4xl">📚</span>
+                          <span className="text-transparent bg-clip-text bg-gradient-to-r from-rainbow-pink to-rainbow-blue">
+                            {category}
+                          </span>
+                          <span className="text-lg text-rainbow-yellow bg-rainbow-purple/30 px-4 py-2 rounded-full font-black border-4 border-yellow-300 animate-pulse">
+                            {videos.length} Fun Videos!
+                          </span>
+                          <span className="animate-wiggle text-4xl">🎪</span>
+                        </h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                          {videos.map((video, index) => (
+                            <div key={index} className="group bg-gradient-to-br from-white/30 to-purple/20 rounded-2xl p-5 transition-all duration-300 hover:bg-gradient-to-br hover:from-white/40 hover:to-purple/30 hover:scale-105 hover:shadow-2xl animate-scale-in border-4 border-white/30 hover:border-rainbow-blue/60 shadow-xl" style={{animationDelay: `${(categoryIndex * 200) + (index * 100)}ms`}}>
+                              <div className="aspect-video bg-gradient-to-br from-gray-600 to-gray-800 rounded-xl mb-4 flex items-center justify-center relative overflow-hidden group-hover:shadow-2xl transition-all duration-300 border-4 border-white/20">
+                                {video.thumbnail ? (
+                                  <img 
+                                    src={video.thumbnail} 
+                                    alt={video.title}
+                                    className="w-full h-full object-cover rounded-lg transition-transform duration-300 group-hover:scale-110"
+                                    onError={(e) => {
+                                      (e.target as HTMLImageElement).style.display = 'none';
+                                      (e.target as HTMLImageElement).nextElementSibling!.style.display = 'flex';
+                                    }}
+                                  />
+                                ) : null}
+                                <div className="text-rainbow-blue text-5xl animate-float" style={{display: video.thumbnail ? 'none' : 'flex'}}>
+                                  🎥
+                                </div>
+                                {/* Hover overlay */}
+                                <div className="absolute inset-0 bg-gradient-to-br from-rainbow-pink/70 to-rainbow-purple/70 opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center justify-center rounded-lg">
+                                  <div className="text-center text-white">
+                                    <div className="text-4xl animate-heart-beat mb-2">▶️</div>
+                                    <span className="text-lg font-fun font-bold animate-bounce-fun">Let's Watch!</span>
+                                  </div>
+                                </div>
+                              </div>
+                              <h4 className="font-fun font-bold text-lg mb-3 line-clamp-2 group-hover:text-rainbow-blue transition-colors duration-300 text-white">
+                                {video.title}
+                              </h4>
+                              <p className="text-white/80 text-sm mb-3 flex items-center gap-2 font-semibold">
+                                <span className="animate-pulse text-lg">📺</span>
+                                <span className="bg-white/20 px-2 py-1 rounded-lg">{video.channel}</span>
+                              </p>
+                              <p className="text-white/70 text-sm mb-4 line-clamp-2 bg-white/10 p-2 rounded-lg">{video.description}</p>
+                              <div className="flex justify-between items-center text-sm mb-4">
+                                <span className="text-white/80 flex items-center gap-2 bg-blue-400/30 px-3 py-2 rounded-full border-2 border-blue-300">
+                                  <span className="animate-pulse text-lg">⏰</span>
+                                  <span className="font-semibold">{video.duration}</span>
+                                </span>
+                                <span className="text-green-100 bg-green-400/50 px-3 py-2 rounded-full font-bold animate-pulse border-2 border-green-300 flex items-center gap-1">
+                                  <span className="text-lg">🛡️</span>
+                                  {video.safetyRating}
+                                </span>
+                              </div>
+                              <a
+                                href={video.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="block w-full mt-3 px-4 py-3 bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-600 hover:to-pink-600 rounded-2xl text-center text-lg font-fun font-bold transition-all duration-300 transform hover:scale-105 active:scale-95 shadow-xl hover:shadow-2xl border-4 border-white/30 text-white"
+                              >
+                                <span className="flex items-center justify-center gap-3">
+                                  <span className="text-2xl animate-bounce-fun">▶️</span>
+                                  Watch Now!
+                                  <span className="text-2xl animate-heart-beat">🎉</span>
+                                </span>
+                              </a>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-12 animate-fade-in">
+                    <div className="bg-gradient-to-br from-gray-400/30 to-gray-600/30 rounded-3xl p-8 border-4 border-gray-300/50">
+                      <div className="text-8xl animate-float mb-6">😔</div>
+                      <div className="text-3xl font-fun font-bold text-white mb-4">Oops! No videos found</div>
+                      <p className="text-xl text-white/80 font-semibold">Let's try again with a different expression!</p>
+                      <div className="flex justify-center gap-4 mt-6">
+                        <span className="text-3xl animate-wiggle">🔄</span>
+                        <span className="text-3xl animate-bounce-fun">🎭</span>
+                        <span className="text-3xl animate-pulse">✨</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Analysis Results with enhanced animations */}
+          {analysis && (
+            <div className="w-full max-w-6xl space-y-6 animate-fade-in">
+              {/* Child Analysis */}
+              <div className="bg-white/10 backdrop-blur-md rounded-xl p-6 border border-white/20 shadow-2xl animate-slide-up">
+                <h2 className="text-2xl font-bold mb-4 text-center flex items-center justify-center gap-2">
+                  <span className="animate-bounce-gentle">👶</span>
+                  Child Analysis
+                  <span className="animate-pulse">🔍</span>
+                </h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2 p-3 bg-blue-500/20 rounded-lg transition-all duration-300 hover:bg-blue-500/30 animate-fade-in">
+                      <span className="text-blue-300 font-semibold flex items-center gap-1">
+                        <span className="animate-pulse">🎂</span>
+                        Age Estimate:
+                      </span>
+                      <span className="bg-blue-600/30 px-2 py-1 rounded">{analysis.childAnalysis.ageEstimate}</span>
+                    </div>
+                    <div className="flex items-center gap-2 p-3 bg-purple-500/20 rounded-lg transition-all duration-300 hover:bg-purple-500/30 animate-fade-in" style={{animationDelay: '100ms'}}>
+                      <span className="text-blue-300 font-semibold flex items-center gap-1">
+                        <span className="animate-bounce-gentle">😊</span>
+                        Primary Emotion:
+                      </span>
+                      <span className="bg-purple-600/30 px-2 py-1 rounded">{analysis.childAnalysis.primaryEmotion}</span>
+                    </div>
+                    <div className="flex items-center gap-2 p-3 bg-green-500/20 rounded-lg transition-all duration-300 hover:bg-green-500/30 animate-fade-in" style={{animationDelay: '200ms'}}>
+                      <span className="text-blue-300 font-semibold flex items-center gap-1">
+                        <span className="animate-pulse">⚡</span>
+                        Energy Level:
+                      </span>
+                      <span className="bg-green-600/30 px-2 py-1 rounded">{analysis.childAnalysis.energyLevel}</span>
+                    </div>
+                  </div>
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2 p-3 bg-yellow-500/20 rounded-lg transition-all duration-300 hover:bg-yellow-500/30 animate-fade-in" style={{animationDelay: '300ms'}}>
+                      <span className="text-blue-300 font-semibold flex items-center gap-1">
+                        <span className="animate-float">🌱</span>
+                        Developmental Stage:
+                      </span>
+                      <span className="bg-yellow-600/30 px-2 py-1 rounded">{analysis.childAnalysis.developmentalStage}</span>
+                    </div>
+                    <div className="flex flex-col gap-1 p-3 bg-pink-500/20 rounded-lg transition-all duration-300 hover:bg-pink-500/30 animate-fade-in" style={{animationDelay: '400ms'}}>
+                      <span className="text-blue-300 font-semibold flex items-center gap-1">
+                        <span className="animate-wiggle">🎭</span>
+                        Mood Indicators:
+                      </span>
+                      <span className="text-sm text-gray-300 bg-pink-600/30 p-2 rounded">{analysis.childAnalysis.moodIndicators}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Content Strategy */}
+              <div className="bg-white/10 backdrop-blur-md rounded-xl p-6 border border-white/20 shadow-2xl animate-slide-up" style={{animationDelay: '200ms'}}>
+                <h2 className="text-2xl font-bold mb-4 text-center flex items-center justify-center gap-2">
+                  <span className="animate-bounce-gentle">🎯</span>
+                  Content Strategy
+                  <span className="animate-pulse">💡</span>
+                </h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-3">
+                    <div className="flex flex-col gap-1 p-3 bg-purple-500/20 rounded-lg transition-all duration-300 hover:bg-purple-500/30 animate-fade-in">
+                      <span className="text-purple-300 font-semibold flex items-center gap-1">
+                        <span className="animate-pulse">💝</span>
+                        Emotional Need:
+                      </span>
+                      <span className="text-sm text-gray-300 bg-purple-600/30 p-2 rounded">{analysis.contentStrategy.emotionalNeed}</span>
+                    </div>
+                    <div className="flex flex-col gap-1 p-3 bg-blue-500/20 rounded-lg transition-all duration-300 hover:bg-blue-500/30 animate-fade-in" style={{animationDelay: '100ms'}}>
+                      <span className="text-purple-300 font-semibold flex items-center gap-1">
+                        <span className="animate-float">📚</span>
+                        Learning Opportunity:
+                      </span>
+                      <span className="text-sm text-gray-300 bg-blue-600/30 p-2 rounded">{analysis.contentStrategy.learningOpportunity}</span>
+                    </div>
+                  </div>
+                  <div className="space-y-3">
+                    <div className="flex flex-col gap-1 p-3 bg-green-500/20 rounded-lg transition-all duration-300 hover:bg-green-500/30 animate-fade-in" style={{animationDelay: '200ms'}}>
+                      <span className="text-purple-300 font-semibold flex items-center gap-1">
+                        <span className="animate-bounce-gentle">⚡</span>
+                        Energy Match:
+                      </span>
+                      <span className="text-sm text-gray-300 bg-green-600/30 p-2 rounded">{analysis.contentStrategy.energyMatch}</span>
+                    </div>
+                    <div className="flex flex-col gap-1 p-3 bg-orange-500/20 rounded-lg transition-all duration-300 hover:bg-orange-500/30 animate-fade-in" style={{animationDelay: '300ms'}}>
+                      <span className="text-purple-300 font-semibold flex items-center gap-1">
+                        <span className="animate-pulse">⏰</span>
+                        Attention Span:
+                      </span>
+                      <span className="text-sm text-gray-300 bg-orange-600/30 p-2 rounded">{analysis.contentStrategy.attentionSpan}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Search Queries with enhanced styling */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* YouTube Kids Queries */}
+                <div className="bg-white/10 backdrop-blur-md rounded-xl p-6 border border-white/20 shadow-2xl animate-slide-up" style={{animationDelay: '400ms'}}>
+                  <h3 className="text-xl font-bold mb-4 text-center flex items-center justify-center gap-2">
+                    <span className="animate-bounce-gentle">📺</span>
+                    YouTube Kids Queries
+                    <span className="animate-pulse">🎈</span>
+                  </h3>
+                  <div className="space-y-2">
+                    {analysis.youtubeKidsQueries.map((query, index) => (
+                      <div key={index} className="bg-red-500/20 rounded-lg p-3 transition-all duration-300 hover:bg-red-500/30 hover:scale-105 animate-fade-in border border-red-400/30" style={{animationDelay: `${(index + 1) * 100}ms`}}>
+                        <span className="text-red-200 font-mono text-sm flex items-center gap-2">
+                          <span className="animate-pulse">🔍</span>
+                          "{query}"
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Google Safe Search Queries */}
+                <div className="bg-white/10 backdrop-blur-md rounded-xl p-6 border border-white/20 shadow-2xl animate-slide-up" style={{animationDelay: '500ms'}}>
+                  <h3 className="text-xl font-bold mb-4 text-center flex items-center justify-center gap-2">
+                    <span className="animate-float">🔍</span>
+                    Google Safe Search
+                    <span className="animate-pulse">🛡️</span>
+                  </h3>
+                  <div className="space-y-2">
+                    {analysis.googleSafeQueries.map((query, index) => (
+                      <div key={index} className="bg-green-500/20 rounded-lg p-3 transition-all duration-300 hover:bg-green-500/30 hover:scale-105 animate-fade-in border border-green-400/30" style={{animationDelay: `${(index + 1) * 100}ms`}}>
+                        <span className="text-green-200 font-mono text-sm flex items-center gap-2">
+                          <span className="animate-pulse">✅</span>
+                          "{query}"
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Parental Guidance */}
+              <div className="bg-white/10 backdrop-blur-md rounded-xl p-6 border border-white/20 shadow-2xl animate-slide-up" style={{animationDelay: '600ms'}}>
+                <h2 className="text-2xl font-bold mb-4 text-center flex items-center justify-center gap-2">
+                  <span className="animate-bounce-gentle">👨‍👩‍👧‍👦</span>
+                  Parental Guidance
+                  <span className="animate-pulse">📋</span>
+                </h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-3">
+                    <div className="flex flex-col gap-1 p-3 bg-yellow-500/20 rounded-lg transition-all duration-300 hover:bg-yellow-500/30 animate-fade-in">
+                      <span className="text-yellow-300 font-semibold flex items-center gap-1">
+                        <span className="animate-pulse">⏱️</span>
+                        Suggested Duration:
+                      </span>
+                      <span className="text-sm text-gray-300 bg-yellow-600/30 p-2 rounded">{analysis.parentalGuidance.suggestedDuration}</span>
+                    </div>
+                    <div className="flex flex-col gap-1 p-3 bg-orange-500/20 rounded-lg transition-all duration-300 hover:bg-orange-500/30 animate-fade-in" style={{animationDelay: '100ms'}}>
+                      <span className="text-yellow-300 font-semibold flex items-center gap-1">
+                        <span className="animate-bounce-gentle">👀</span>
+                        Supervision Level:
+                      </span>
+                      <span className="text-sm text-gray-300 bg-orange-600/30 p-2 rounded">{analysis.parentalGuidance.supervisionLevel}</span>
+                    </div>
+                    <div className="flex flex-col gap-1 p-3 bg-pink-500/20 rounded-lg transition-all duration-300 hover:bg-pink-500/30 animate-fade-in" style={{animationDelay: '200ms'}}>
+                      <span className="text-yellow-300 font-semibold flex items-center gap-1">
+                        <span className="animate-float">👥</span>
+                        Co-viewing Opportunities:
+                      </span>
+                      <span className="text-sm text-gray-300 bg-pink-600/30 p-2 rounded">{analysis.parentalGuidance.coViewingOpportunities}</span>
+                    </div>
+                  </div>
+                  <div className="space-y-3">
+                    <div className="flex flex-col gap-1 p-3 bg-blue-500/20 rounded-lg transition-all duration-300 hover:bg-blue-500/30 animate-fade-in" style={{animationDelay: '300ms'}}>
+                      <span className="text-yellow-300 font-semibold flex items-center gap-1">
+                        <span className="animate-wiggle">💬</span>
+                        Discussion Points:
+                      </span>
+                      <span className="text-sm text-gray-300 bg-blue-600/30 p-2 rounded">{analysis.parentalGuidance.discussionPoints}</span>
+                    </div>
+                    <div className="flex flex-col gap-1 p-3 bg-purple-500/20 rounded-lg transition-all duration-300 hover:bg-purple-500/30 animate-fade-in" style={{animationDelay: '400ms'}}>
+                      <span className="text-yellow-300 font-semibold flex items-center gap-1">
+                        <span className="animate-pulse">🎯</span>
+                        Follow-up Activities:
+                      </span>
+                      <span className="text-sm text-gray-300 bg-purple-600/30 p-2 rounded">{analysis.parentalGuidance.followUpActivities}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Developmental Benefits */}
+              <div className="bg-white/10 backdrop-blur-md rounded-xl p-6 border border-white/20 shadow-2xl animate-slide-up" style={{animationDelay: '700ms'}}>
+                <h2 className="text-2xl font-bold mb-4 text-center flex items-center justify-center gap-2">
+                  <span className="animate-float">🧠</span>
+                  Developmental Benefits
+                  <span className="animate-pulse">🌟</span>
+                </h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-3">
+                    <div className="flex flex-col gap-1 p-3 bg-green-500/20 rounded-lg transition-all duration-300 hover:bg-green-500/30 animate-fade-in">
+                      <span className="text-green-300 font-semibold flex items-center gap-1">
+                        <span className="animate-bounce-gentle">💝</span>
+                        Emotional Development:
+                      </span>
+                      <span className="text-sm text-gray-300 bg-green-600/30 p-2 rounded">{analysis.developmentalBenefits.emotionalDevelopment}</span>
+                    </div>
+                    <div className="flex flex-col gap-1 p-3 bg-blue-500/20 rounded-lg transition-all duration-300 hover:bg-blue-500/30 animate-fade-in" style={{animationDelay: '100ms'}}>
+                      <span className="text-green-300 font-semibold flex items-center gap-1">
+                        <span className="animate-pulse">🧩</span>
+                        Cognitive Skills:
+                      </span>
+                      <span className="text-sm text-gray-300 bg-blue-600/30 p-2 rounded">{analysis.developmentalBenefits.cognitiveSkills}</span>
+                    </div>
+                  </div>
+                  <div className="space-y-3">
+                    <div className="flex flex-col gap-1 p-3 bg-purple-500/20 rounded-lg transition-all duration-300 hover:bg-purple-500/30 animate-fade-in" style={{animationDelay: '200ms'}}>
+                      <span className="text-green-300 font-semibold flex items-center gap-1">
+                        <span className="animate-wiggle">👫</span>
+                        Social Skills:
+                      </span>
+                      <span className="text-sm text-gray-300 bg-purple-600/30 p-2 rounded">{analysis.developmentalBenefits.socialSkills}</span>
+                    </div>
+                    <div className="flex flex-col gap-1 p-3 bg-pink-500/20 rounded-lg transition-all duration-300 hover:bg-pink-500/30 animate-fade-in" style={{animationDelay: '300ms'}}>
+                      <span className="text-green-300 font-semibold flex items-center gap-1">
+                        <span className="animate-float">🎨</span>
+                        Creative Expression:
+                      </span>
+                      <span className="text-sm text-gray-300 bg-pink-600/30 p-2 rounded">{analysis.developmentalBenefits.creativeExpression}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Safety Assurance */}
+              <div className="bg-white/10 backdrop-blur-md rounded-xl p-6 border border-white/20 shadow-2xl animate-slide-up" style={{animationDelay: '800ms'}}>
+                <h2 className="text-2xl font-bold mb-4 text-center flex items-center justify-center gap-2">
+                  <span className="animate-bounce-gentle">🛡️</span>
+                  Safety Assurance
+                  <span className="animate-pulse">🔒</span>
+                </h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {analysis.safetyAssurance.map((item, index) => (
+                    <div key={index} className="flex items-center gap-2 p-3 bg-green-500/20 rounded-lg transition-all duration-300 hover:bg-green-500/30 animate-fade-in border border-green-400/30" style={{animationDelay: `${index * 50}ms`}}>
+                      <span className="text-green-400 animate-pulse">✓</span>
+                      <span className="text-sm text-gray-300">{item}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Instructions with playful child-friendly design */}
+          <div className="bg-gradient-to-br from-white/20 to-purple/20 backdrop-blur-md rounded-3xl p-8 max-w-4xl border-4 border-white/30 shadow-2xl animate-slide-up">
+            <h3 className="text-3xl font-fun font-bold mb-6 flex items-center justify-center gap-4 text-white">
+              <span className="animate-bounce-fun text-4xl">📱</span>
+              <span className="text-transparent bg-clip-text bg-gradient-to-r from-rainbow-pink to-rainbow-blue">
+                How to Play with KidsEmotion!
+              </span>
+              <span className="animate-heart-beat text-4xl">✨</span>
+            </h3>
+            <ol className="list-none space-y-4 text-white">
+              <li className="transition-all duration-300 hover:text-yellow-300 hover:bg-white/20 p-4 rounded-2xl animate-fade-in flex items-center gap-4 border-2 border-white/20 hover:border-yellow-300/50" style={{animationDelay: '100ms'}}>
+                <span className="text-4xl animate-pulse bg-green-400/30 p-3 rounded-full border-4 border-green-300">📹</span>
+                <div className="flex-1">
+                  <span className="text-xl font-fun font-bold">Step 1:</span>
+                  <p className="text-lg font-semibold">Click "Start Camera Fun!" to begin your adventure</p>
+                </div>
+              </li>
+              <li className="transition-all duration-300 hover:text-yellow-300 hover:bg-white/20 p-4 rounded-2xl animate-fade-in flex items-center gap-4 border-2 border-white/20 hover:border-yellow-300/50" style={{animationDelay: '200ms'}}>
+                <span className="text-4xl animate-jiggle bg-blue-400/30 p-3 rounded-full border-4 border-blue-300">🔐</span>
+                <div className="flex-1">
+                  <span className="text-xl font-fun font-bold">Step 2:</span>
+                  <p className="text-lg font-semibold">Say "Yes!" when asked for camera permission</p>
+                </div>
+              </li>
+              <li className="transition-all duration-300 hover:text-yellow-300 hover:bg-white/20 p-4 rounded-2xl animate-fade-in flex items-center gap-4 border-2 border-white/20 hover:border-yellow-300/50" style={{animationDelay: '300ms'}}>
+                <span className="text-4xl animate-wiggle bg-pink-400/30 p-3 rounded-full border-4 border-pink-300">👶</span>
+                <div className="flex-1">
+                  <span className="text-xl font-fun font-bold">Step 3:</span>
+                  <p className="text-lg font-semibold">Show your beautiful face to the camera!</p>
+                </div>
+              </li>
+              <li className="transition-all duration-300 hover:text-yellow-300 hover:bg-white/20 p-4 rounded-2xl animate-fade-in flex items-center gap-4 border-2 border-white/20 hover:border-yellow-300/50" style={{animationDelay: '400ms'}}>
+                <span className="text-4xl animate-heart-beat bg-purple-400/30 p-3 rounded-full border-4 border-purple-300">📸</span>
+                <div className="flex-1">
+                  <span className="text-xl font-fun font-bold">Step 4:</span>
+                  <p className="text-lg font-semibold">Click "Let's Analyze Your Expression!" for magic!</p>
+                </div>
+              </li>
+              <li className="transition-all duration-300 hover:text-yellow-300 hover:bg-white/20 p-4 rounded-2xl animate-fade-in flex items-center gap-4 border-2 border-white/20 hover:border-yellow-300/50" style={{animationDelay: '500ms'}}>
+                <span className="text-4xl animate-float bg-yellow-400/30 p-3 rounded-full border-4 border-yellow-300">📊</span>
+                <div className="flex-1">
+                  <span className="text-xl font-fun font-bold">Step 5:</span>
+                  <p className="text-lg font-semibold">See cool analysis about how you're feeling!</p>
+                </div>
+              </li>
+              <li className="transition-all duration-300 hover:text-yellow-300 hover:bg-white/20 p-4 rounded-2xl animate-fade-in flex items-center gap-4 border-2 border-white/20 hover:border-yellow-300/50" style={{animationDelay: '600ms'}}>
+                <span className="text-4xl animate-bounce-fun bg-red-400/30 p-3 rounded-full border-4 border-red-300">🎥</span>
+                <div className="flex-1">
+                  <span className="text-xl font-fun font-bold">Step 6:</span>
+                  <p className="text-lg font-semibold">Watch amazing videos picked just for you!</p>
+                </div>
+              </li>
+              <li className="transition-all duration-300 hover:text-yellow-300 hover:bg-white/20 p-4 rounded-2xl animate-fade-in flex items-center gap-4 border-2 border-white/20 hover:border-yellow-300/50" style={{animationDelay: '700ms'}}>
+                <span className="text-4xl animate-spin-slow bg-orange-400/30 p-3 rounded-full border-4 border-orange-300">📚</span>
+                <div className="flex-1">
+                  <span className="text-xl font-fun font-bold">Step 7:</span>
+                  <p className="text-lg font-semibold">Explore fun videos by different topics!</p>
+                </div>
+              </li>
+              <li className="transition-all duration-300 hover:text-yellow-300 hover:bg-white/20 p-4 rounded-2xl animate-fade-in flex items-center gap-4 border-2 border-white/20 hover:border-yellow-300/50" style={{animationDelay: '800ms'}}>
+                <span className="text-4xl animate-jiggle bg-teal-400/30 p-3 rounded-full border-4 border-teal-300">👨‍👩‍👧‍👦</span>
+                <div className="flex-1">
+                  <span className="text-xl font-fun font-bold">Step 8:</span>
+                  <p className="text-lg font-semibold">Watch videos with your family for extra fun!</p>
+                </div>
+              </li>
+            </ol>
+            <div className="mt-8 p-6 bg-gradient-to-r from-yellow-400/30 to-orange-400/30 rounded-2xl animate-fade-in border-4 border-yellow-300/50 shadow-xl" style={{animationDelay: '900ms'}}>
+              <p className="text-yellow-100 text-xl flex items-center gap-4 font-fun font-bold text-center">
+                <span className="text-4xl animate-wiggle">⚠️</span>
+                <span className="flex-1">
+                  <strong className="text-2xl">Super Important!</strong><br/>
+                  This is a safe place for kids! Always watch videos with a grown-up for the most fun!
+                </span>
+                <span className="text-4xl animate-heart-beat">💝</span>
+              </p>
+              <div className="flex justify-center gap-4 mt-4">
+                <span className="text-3xl animate-bounce-fun">🛡️</span>
+                <span className="text-3xl animate-float">👨‍👩‍👧‍👦</span>
+                <span className="text-3xl animate-wiggle">❤️</span>
+                <span className="text-3xl animate-pulse">🌟</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Hidden canvas for frame capture */}
+      <canvas ref={canvasRef} className="hidden" />
     </div>
   );
 }
-
-const resources = [
-  {
-    href: "https://remix.run/start/quickstart",
-    text: "Quick Start (5 min)",
-    icon: (
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="24"
-        height="20"
-        viewBox="0 0 20 20"
-        fill="none"
-        className="stroke-gray-600 group-hover:stroke-current dark:stroke-gray-300"
-      >
-        <path
-          d="M8.51851 12.0741L7.92592 18L15.6296 9.7037L11.4815 7.33333L12.0741 2L4.37036 10.2963L8.51851 12.0741Z"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-    ),
-  },
-  {
-    href: "https://remix.run/start/tutorial",
-    text: "Tutorial (30 min)",
-    icon: (
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="24"
-        height="20"
-        viewBox="0 0 20 20"
-        fill="none"
-        className="stroke-gray-600 group-hover:stroke-current dark:stroke-gray-300"
-      >
-        <path
-          d="M4.561 12.749L3.15503 14.1549M3.00811 8.99944H1.01978M3.15503 3.84489L4.561 5.2508M8.3107 1.70923L8.3107 3.69749M13.4655 3.84489L12.0595 5.2508M18.1868 17.0974L16.635 18.6491C16.4636 18.8205 16.1858 18.8205 16.0144 18.6491L13.568 16.2028C13.383 16.0178 13.0784 16.0347 12.915 16.239L11.2697 18.2956C11.047 18.5739 10.6029 18.4847 10.505 18.142L7.85215 8.85711C7.75756 8.52603 8.06365 8.21994 8.39472 8.31453L17.6796 10.9673C18.0223 11.0653 18.1115 11.5094 17.8332 11.7321L15.7766 13.3773C15.5723 13.5408 15.5554 13.8454 15.7404 14.0304L18.1868 16.4767C18.3582 16.6481 18.3582 16.926 18.1868 17.0974Z"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-    ),
-  },
-  {
-    href: "https://remix.run/docs",
-    text: "Remix Docs",
-    icon: (
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="24"
-        height="20"
-        viewBox="0 0 20 20"
-        fill="none"
-        className="stroke-gray-600 group-hover:stroke-current dark:stroke-gray-300"
-      >
-        <path
-          d="M9.99981 10.0751V9.99992M17.4688 17.4688C15.889 19.0485 11.2645 16.9853 7.13958 12.8604C3.01467 8.73546 0.951405 4.11091 2.53116 2.53116C4.11091 0.951405 8.73546 3.01467 12.8604 7.13958C16.9853 11.2645 19.0485 15.889 17.4688 17.4688ZM2.53132 17.4688C0.951566 15.8891 3.01483 11.2645 7.13974 7.13963C11.2647 3.01471 15.8892 0.951453 17.469 2.53121C19.0487 4.11096 16.9854 8.73551 12.8605 12.8604C8.73562 16.9853 4.11107 19.0486 2.53132 17.4688Z"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-        />
-      </svg>
-    ),
-  },
-  {
-    href: "https://rmx.as/discord",
-    text: "Join Discord",
-    icon: (
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="24"
-        height="20"
-        viewBox="0 0 24 20"
-        fill="none"
-        className="stroke-gray-600 group-hover:stroke-current dark:stroke-gray-300"
-      >
-        <path
-          d="M15.0686 1.25995L14.5477 1.17423L14.2913 1.63578C14.1754 1.84439 14.0545 2.08275 13.9422 2.31963C12.6461 2.16488 11.3406 2.16505 10.0445 2.32014C9.92822 2.08178 9.80478 1.84975 9.67412 1.62413L9.41449 1.17584L8.90333 1.25995C7.33547 1.51794 5.80717 1.99419 4.37748 2.66939L4.19 2.75793L4.07461 2.93019C1.23864 7.16437 0.46302 11.3053 0.838165 15.3924L0.868838 15.7266L1.13844 15.9264C2.81818 17.1714 4.68053 18.1233 6.68582 18.719L7.18892 18.8684L7.50166 18.4469C7.96179 17.8268 8.36504 17.1824 8.709 16.4944L8.71099 16.4904C10.8645 17.0471 13.128 17.0485 15.2821 16.4947C15.6261 17.1826 16.0293 17.8269 16.4892 18.4469L16.805 18.8725L17.3116 18.717C19.3056 18.105 21.1876 17.1751 22.8559 15.9238L23.1224 15.724L23.1528 15.3923C23.5873 10.6524 22.3579 6.53306 19.8947 2.90714L19.7759 2.73227L19.5833 2.64518C18.1437 1.99439 16.6386 1.51826 15.0686 1.25995ZM16.6074 10.7755L16.6074 10.7756C16.5934 11.6409 16.0212 12.1444 15.4783 12.1444C14.9297 12.1444 14.3493 11.6173 14.3493 10.7877C14.3493 9.94885 14.9378 9.41192 15.4783 9.41192C16.0471 9.41192 16.6209 9.93851 16.6074 10.7755ZM8.49373 12.1444C7.94513 12.1444 7.36471 11.6173 7.36471 10.7877C7.36471 9.94885 7.95323 9.41192 8.49373 9.41192C9.06038 9.41192 9.63892 9.93712 9.6417 10.7815C9.62517 11.6239 9.05462 12.1444 8.49373 12.1444Z"
-          strokeWidth="1.5"
-        />
-      </svg>
-    ),
-  },
-];
